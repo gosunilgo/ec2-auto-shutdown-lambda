@@ -6,18 +6,16 @@ from dateutil.tz import tzlocal
 
 print('INFO: Loading function')
 
-DRY_RUN = True  # Do not send e-mail, or shut down instances
+DRY_RUN = False  # Do not send e-mail, or shut down instances
 
-MAIL_AFTER_DAYS = 3
-SHUTDOWN_AFTER_DAYS = 6
+MAIL_AFTER_HOURS = 0
+SHUTDOWN_AFTER_HOURS = 1
 THRESHOLD = 1  # percent
 EXCLUDE_TAG = 'AutoStopPreventedBy'  # Case insensitive
-MAIL_FROM = 'ben@cloudar.be'
-MAIL_TO = 'ben@cloudar.be'
+MAIL_FROM = 'REPLACE_THIS_EMAIL'
+MAIL_TO = 'REPLACE_THIS_EMAIL'
 MAIL_TEXT = '''
-The following instances where inactive for the last %(days)s days. and will be shut down in
-%(deadline)s days. Please use them, or tag them with the key %(tag)s and your name as the value
-to prevent this. \n\n %(instances)s
+The following instances have been stopped - %(instances)s
 '''
 ASG_TAG = 'aws:autoscaling:groupName' # This is always added by AWS for autoscaling groups
 
@@ -27,7 +25,7 @@ ses = boto3.client('ses')
 
 
 def lambda_handler(event, context):
-    if MAIL_AFTER_DAYS >= SHUTDOWN_AFTER_DAYS or SHUTDOWN_AFTER_DAYS <= 0:
+    if SHUTDOWN_AFTER_HOURS <= 0:
         print("ERROR: Not a valid amount of days")
         exit()
 
@@ -37,7 +35,7 @@ def lambda_handler(event, context):
     now = datetime.now(tzlocal())
     # round down to the nearest minute, just like cloudwatch
     now = now - timedelta(seconds=now.second, microseconds=now.microsecond)
-    starttime = now - timedelta(days=SHUTDOWN_AFTER_DAYS)
+    starttime = now - timedelta(hours=SHUTDOWN_AFTER_HOURS)
 
     stop_instances = []
     mail_instances = []
@@ -61,7 +59,7 @@ def lambda_handler(event, context):
             if ASG_TAG.lower() in instance_tags:
                 print('INFO: instance %s is part of an Auto Scaling Group . Skipping' % instance_id)
                 asg_instances.append(instance_id)
-                continue # Exit lopp
+                continue # Exit loop
             if EXCLUDE_TAG.lower() in instance_tags:
                 print('INFO: instance %s is tagged. Skipping' % instance_id)
                 skipped_instances.append(instance_id)
@@ -78,44 +76,24 @@ def lambda_handler(event, context):
                 Statistics=['Maximum'],
             )
 
-            # Default - Not active between now and shutdown threshold
-            stop = True
-            mail = True
-
-            for datapoint in statistics_response['Datapoints']:
-                if datapoint['Maximum'] > THRESHOLD:
-                    timestamp = datapoint['Timestamp']
-                    if timestamp >= now - timedelta(days=MAIL_AFTER_DAYS):
-                        # Active between now and mail threshold
-                        stop = False
-                        mail = False
-                    elif timestamp >= now - timedelta(days=SHUTDOWN_AFTER_DAYS):
-                        # Active between mail threshold and shutdown threshold
-                        stop = False
-
-            if stop:
-                stop_instances.append(instance_id)
-            elif mail:
-                mail_instances.append(instance_id)
-            else:
-                active_instances.append(instance_id)
+            stop_instances.append(instance_id)
+            mail_instances.append(instance_id)
 
     if not DRY_RUN and len(mail_instances) > 0:
         mail_response = ses.send_email(
             Source=MAIL_FROM,
-            Destination={
+                Destination={
                 'ToAddresses': [MAIL_TO]
             },
             Message={
                 'Subject': {
-                    'Data': 'EC2 instances will be shut down',
+                    'Data': 'EC2 instances will be shut down - ',
                     'Charset': 'UTF-8'
                 },
                 'Body': {
                     'Text': {
                         'Data': MAIL_TEXT % {
-                            'days': MAIL_AFTER_DAYS,
-                            'deadline': SHUTDOWN_AFTER_DAYS - MAIL_AFTER_DAYS,
+
                             'tag': EXCLUDE_TAG,
                             'instances': '\n'.join(mail_instances)
                         },
